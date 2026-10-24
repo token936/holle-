@@ -33,22 +33,22 @@ cat > "$ROOT/app/build.gradle" <<'EOF'
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
 android {
     namespace "com.example.gazescroll"
-    compileSdk 35
-    defaultConfig { applicationId "com.example.gazescroll"; minSdk 26; targetSdk 35; versionCode 1; versionName "1.0" }
+    compileSdk 34
+    defaultConfig { applicationId "com.example.gazescroll"; minSdk 26; targetSdk 34; versionCode 1; versionName "1.0" }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
     kotlinOptions { jvmTarget = '1.8' }
 }
 dependencies {
-    implementation 'androidx.core:core-ktx:1.13.1'
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.google.mediapipe:tasks-vision:0.10.21'
-    implementation 'androidx.lifecycle:lifecycle-service:2.8.5'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
-    implementation "androidx.camera:camera-core:1.3.4"
-    implementation "androidx.camera:camera-camera2:1.3.4"
-    implementation "androidx.camera:camera-lifecycle:1.3.4"
+    implementation 'androidx.lifecycle:lifecycle-service:2.7.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation "androidx.camera:camera-core:1.3.1"
+    implementation "androidx.camera:camera-camera2:1.3.1"
+    implementation "androidx.camera:camera-lifecycle:1.3.1"
 }
 EOF
 
@@ -90,10 +90,8 @@ EOF
 cat > "$RES/layout/activity_main.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="24dp">
     <Button android:id="@+id/btn_calibrate" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Calibrate" />
     <Button android:id="@+id/btn_start" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Start Service" />
     <Button android:id="@+id/btn_hud_perm" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="HUD Permission" />
@@ -104,10 +102,8 @@ EOF
 cat > "$RES/layout/activity_calibration.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:gravity="center"
-    android:orientation="vertical">
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:gravity="center" android:orientation="vertical">
     <TextView android:id="@+id/tv_tip" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="22sp" />
 </LinearLayout>
 EOF
@@ -297,7 +293,6 @@ import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
-import androidx.camera.core.toBitmap
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -305,6 +300,8 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.Executors
 
 class GazeScrollService : LifecycleService() {
@@ -316,6 +313,21 @@ class GazeScrollService : LifecycleService() {
     private lateinit var cfg: GazeConfig
     private lateinit var trigger: GazeTrigger
     private lateinit var hud: GazeHud
+
+    private fun imageProxyToBitmap(proxy: ImageProxy): Bitmap? {
+        return try {
+            val img = proxy.image ?: return null
+            val plane = img.planes[0]
+            val buffer: ByteBuffer = plane.buffer
+            buffer.order(ByteOrder.LITTLE_ENDIAN)
+            val pixelStride = plane.pixelStride
+            val rowStride = plane.rowStride
+            val rowPadding = rowStride - pixelStride * proxy.width
+            val bitmap = Bitmap.createBitmap(proxy.width + rowPadding / pixelStride, proxy.height, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(buffer)
+            bitmap
+        } catch (e: Exception) { null }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -344,13 +356,14 @@ class GazeScrollService : LifecycleService() {
             val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
             analysis.setAnalyzer(executor) { proxy ->
                 if (faceMarker == null) { proxy.close(); return@setAnalyzer }
+                val bitmap = imageProxyToBitmap(proxy)
+                if(bitmap == null) { proxy.close(); return@setAnalyzer }
                 try {
-                    val bitmap = proxy.toBitmap()
                     val m = Matrix().apply { postRotate(proxy.imageInfo.rotationDegrees.toFloat()); postScale(-1f, 1f) }
                     val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
                     lastAspect = rotated.width.toFloat() / rotated.height.toFloat()
                     faceMarker?.detectAsync(BitmapImageBuilder(rotated).build(), SystemClock.uptimeMillis())
-                } catch (t: Throwable) { Log.e("Gaze", "err", t) } finally { proxy.close() }
+                } catch (t: Throwable) {} finally { proxy.close() }
             }
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
         }, ContextCompat.getMainExecutor(this))
@@ -390,8 +403,17 @@ class ScrollAccessibilityService : AccessibilityService() {
             }
         }
     }
-    private fun tryNodeScroll(forward: Boolean): Boolean { val root = rootInActiveWindow ?: return false; val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD; return findScrollable(root, action, 0) }
-    private fun findScrollable(n: AccessibilityNodeInfo?, action: Int, depth: Int): Boolean { if (n == null || depth > 12) return false; if (n.isScrollable && n.supportsAction(action) && n.performAction(action)) return true; for (i in 0 until n.childCount) { if (findScrollable(n.getChild(i), action, depth + 1)) return true }; return false }
+    private fun tryNodeScroll(forward: Boolean): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        return findScrollable(root, action, 0)
+    }
+    private fun findScrollable(n: AccessibilityNodeInfo?, action: Int, depth: Int): Boolean {
+        if (n == null || depth > 12) return false
+        if (n.isScrollable && n.performAction(action)) return true
+        for (i in 0 until n.childCount) { if (findScrollable(n.getChild(i), action, depth + 1)) return true }
+        return false
+    }
     private fun gestureScroll(up: Boolean) { val dm = resources.displayMetrics; val path = Path().apply { moveTo(dm.widthPixels * 0.5f, if (up) dm.heightPixels * 0.75f else dm.heightPixels * 0.25f); lineTo(dm.widthPixels * 0.5f, if (up) dm.heightPixels * 0.25f else dm.heightPixels * 0.75f) }; dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 320)).build(), null, null) }
     private fun gestureHorizontal(right: Boolean) { val dm = resources.displayMetrics; val path = Path().apply { moveTo(if (right) dm.widthPixels * 0.22f else dm.widthPixels * 0.78f, dm.heightPixels * 0.5f); lineTo(if (right) dm.widthPixels * 0.78f else dm.widthPixels * 0.22f, dm.heightPixels * 0.5f) }; dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 300)).build(), null, null) }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
