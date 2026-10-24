@@ -17,7 +17,7 @@ EOF
 
 cat > "$ROOT/build.gradle" <<'EOF'
 plugins {
-    id 'com.android.application' version '8.5.2' apply false
+    id 'com.android.application' version '8.4.2' apply false
     id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
 }
 EOF
@@ -45,6 +45,8 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.google.mediapipe:tasks-vision:0.10.21'
     implementation 'androidx.lifecycle:lifecycle-service:2.8.5'
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.8.5"
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation "androidx.camera:camera-core:1.4.0"
     implementation "androidx.camera:camera-camera2:1.4.0"
     implementation "androidx.camera:camera-lifecycle:1.4.0"
@@ -79,23 +81,50 @@ EOF
 
 cat > "$RES/xml/accessibility_service_config.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeAllMask" android:canPerformGestures="true" android:canRetrieveWindowContent="true" android:description="@string/app_name" />
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/app_name" />
 EOF
 
 cat > "$RES/layout/activity_main.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="24dp">
-    <Button android:id="@+id/btn_calibrate" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Calibrate" />
-    <Button android:id="@+id/btn_start" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Start Service" />
-    <Button android:id="@+id/btn_hud_perm" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="HUD Permission" />
-    <Button android:id="@+id/btn_acc" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Accessibility Settings" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp">
+    <Button android:id="@+id/btn_calibrate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Calibrate" />
+    <Button android:id="@+id/btn_start"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start Service" />
+    <Button android:id="@+id/btn_hud_perm"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="HUD Permission" />
+    <Button android:id="@+id/btn_acc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Accessibility Settings" />
 </LinearLayout>
 EOF
 
 cat > "$RES/layout/activity_calibration.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center" android:orientation="vertical">
-    <TextView android:id="@+id/tv_tip" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="22sp" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical">
+    <TextView android:id="@+id/tv_tip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="22sp" />
 </LinearLayout>
 EOF
 
@@ -283,7 +312,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.toBitmap
+import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -291,6 +320,8 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.Executors
 
 class GazeScrollService : LifecycleService() {
@@ -302,6 +333,24 @@ class GazeScrollService : LifecycleService() {
     private lateinit var cfg: GazeConfig
     private lateinit var trigger: GazeTrigger
     private lateinit var hud: GazeHud
+
+    private fun imageProxyToBitmap(proxy: ImageProxy): Bitmap? {
+        return try {
+            val img = proxy.image ?: return null
+            val plane = img.planes[0]
+            val buffer: ByteBuffer = plane.buffer
+            buffer.order(ByteOrder.LITTLE_ENDIAN)
+            val pixelStride = plane.pixelStride
+            val rowStride = plane.rowStride
+            val rowPadding = rowStride - pixelStride * proxy.width
+            val bitmap = Bitmap.createBitmap(proxy.width + rowPadding / pixelStride, proxy.height, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(buffer)
+            bitmap
+        } catch (e: Exception) {
+            Log.e("Gaze", "convert image error", e)
+            null
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -330,8 +379,9 @@ class GazeScrollService : LifecycleService() {
             val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
             analysis.setAnalyzer(executor) { proxy ->
                 if (faceMarker == null) { proxy.close(); return@setAnalyzer }
+                val bitmap = imageProxyToBitmap(proxy)
+                if(bitmap == null) { proxy.close(); return@setAnalyzer }
                 try {
-                    val bitmap = proxy.toBitmap()
                     val m = Matrix().apply { postRotate(proxy.imageInfo.rotationDegrees.toFloat()); postScale(-1f, 1f) }
                     val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
                     lastAspect = rotated.width.toFloat() / rotated.height.toFloat()
